@@ -1,3 +1,4 @@
+#include "panic.hpp"
 #include "vga.h"
 #include "bios.hpp"
 #include "gui.hpp"
@@ -14,8 +15,9 @@ static int cursor_y = 6; // Начинаем с 6-й строки, чтобы н
 static char current_color = COLOR_WHITE;
 static volatile unsigned char* video_memory = (volatile unsigned char*) 0xB8000;
 
-// Выделяем память под буфер прямо внутри ядра без использования внешних Си-функций
-static char internal_cmd_buffer[64];
+// Выделяем память под буфер прямо внутри ядра (скобки защищены через #define)
+#define CMD_BUF_SIZE 64
+static char internal_cmd_buffer[CMD_BUF_SIZE];
 static int cmd_index = 0;
 
 // Своя простейшая функция сравнения строк прямо внутри файла
@@ -26,6 +28,16 @@ static int local_str_equal(const char* s1, const char* s2) {
         i++;
     }
     return (s1[i] == '\0' && s2[i] == '\0');
+}
+
+// Проверка, начинается ли строка с нужного префикса (для команд Lua)
+static int local_str_starts_with(const char* str, const char* prefix) {
+    int i = 0;
+    while (prefix[i] != '\0') {
+        if (str[i] != prefix[i]) return 0;
+        i++;
+    }
+    return 1;
 }
 
 void clear_screen(void) {
@@ -95,6 +107,36 @@ void print_prompt(void) {
     print_color("BitOS> ", COLOR_LIGHT_GREEN);
 }
 
+// ============================================================================
+// МИНИ-ИНТЕРПРЕТАТОР LUA ДЛЯ BITOS
+// ============================================================================
+void execute_lua_script(const char* code) {
+    // 1. Обработка Lua функции: print("текст")
+    if (local_str_starts_with(code, "print(")) {
+        int i = 6;
+        while (code[i] != '\0' && code[i] != '"' && code[i] != '\'') {
+            i++;
+        }
+        if (code[i] == '"' || code[i] == '\'') {
+            char quote = code[i];
+            i++; // Переходим к первому символу внутри кавычек
+            print_color("[Lua] ", COLOR_CYAN);
+            while (code[i] != '\0' && code[i] != quote) {
+                print_char(code[i]);
+                i++;
+            }
+            print_char('\n');
+        } else {
+            print_color("[Lua Error] Expected quotes inside print()\n", COLOR_LIGHT_RED);
+        }
+    }
+    // 2. Обработка Lua функции: beep()
+    else if (local_str_equal(code, "beep()")) {
+        print_color("[Lua] Calling hardware speaker...\n", COLOR_CYAN);
+        beep(1000, 3);
+    }
+}
+
 void execute_command(void) {
     print_char('\n');
 
@@ -107,6 +149,7 @@ void execute_command(void) {
         print_color(" help        ", COLOR_LIGHT_GREEN); print_string("- Show this help window\n");
         print_color(" cls         ", COLOR_LIGHT_GREEN); print_string("- Clear the terminal screen\n");
         print_color(" info        ", COLOR_LIGHT_GREEN); print_string("- Display system version\n");
+        print_color(" lua         ", COLOR_LIGHT_GREEN); print_string("- Run demo Lua script\n");
         print_color(" beep        ", COLOR_LIGHT_GREEN); print_string("- Test audio hardware speaker\n");
         print_color(" bios-info   ", COLOR_LIGHT_GREEN); print_string("- Check motherboard BIOS status\n");
         print_color(" reboot      ", COLOR_LIGHT_GREEN); print_string("- Restart the computer\n");
@@ -116,8 +159,13 @@ void execute_command(void) {
         clear_screen();
     } 
     else if (local_str_equal(internal_cmd_buffer, "info")) {
-        print_color("BitOS v0.5 - Clean C++ Stable Build.\n", COLOR_CYAN);
+        print_color("BitOS v0.5 - Clean C++ & Lua Stable Build.\n", COLOR_CYAN);
     } 
+    else if (local_str_equal(internal_cmd_buffer, "lua")) {
+        print_color("--- Running internal Lua VM ---\n", COLOR_YELLOW);
+        execute_lua_script("print(\"Hello from BitOS Lua Engine!\")");
+        execute_lua_script("print(\"Try typing: print('your text') or beep()\")");
+    }
     else if (local_str_equal(internal_cmd_buffer, "beep")) {
         print_color("Beeping...\n", COLOR_CYAN);
         beep(1000, 3);
@@ -136,6 +184,10 @@ void execute_command(void) {
             print_color(" Battery Status: [ OK ]\n", COLOR_LIGHT_GREEN);
         }
     } 
+    // Если ввели команду в стиле Lua: print("...") или beep()
+    else if (local_str_starts_with(internal_cmd_buffer, "print(") || local_str_equal(internal_cmd_buffer, "beep()")) {
+        execute_lua_script(internal_cmd_buffer);
+    }
     else if (cmd_index > 0) {
         print_color("Unknown command: ", COLOR_LIGHT_RED);
         print_string(internal_cmd_buffer);
@@ -143,7 +195,7 @@ void execute_command(void) {
     }
 
     // Чистим внутренний буфер
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < CMD_BUF_SIZE; i++) {
         internal_cmd_buffer[i] = '\0';
     }
     cmd_index = 0;
@@ -162,17 +214,18 @@ void kernel_main(void) {
     WindowManager::DrawText(1, 0, "OS: BitOS", 0x1F);
     WindowManager::DrawText(12, 0, "| Cmd:", 0x1F);
     WindowManager::DrawText(20, 0, "none", 0x1F); 
-    WindowManager::DrawText(65, 0, "Core: C++", 0x1E); 
+    WindowManager::DrawText(62, 0, "Core: C++/Lua", 0x1E); 
 
     WindowManager::DrawWindow(20, 2, 40, 3, " Welcome to BitOS ", 0x4F, 0x4E); 
     WindowManager::DrawText(22, 3, "TUI Interface Initialized!", 0x4F);
 
     // Первичная очистка локального буфера
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < CMD_BUF_SIZE; i++) {
         internal_cmd_buffer[i] = '\0';
     }
 
-    init_keyboard();
+    // Включаем плавные прерывания клавиатуры с буфером!
+    init_keyboard_driver();
     init_mouse();
 
     cursor_x = 0;
@@ -191,16 +244,11 @@ void kernel_main(void) {
                     internal_cmd_buffer[cmd_index] = '\0';
                     print_char('\b');
                 }
-            } else if (cmd_index < 60) {
+            } else if (cmd_index < (CMD_BUF_SIZE - 4)) {
                 internal_cmd_buffer[cmd_index] = key;
                 cmd_index++;
                 print_char(key);
             }
-        }
-        
-        volatile int delay = 50000;
-        while (delay > 0) {
-            delay--;
         }
     }
 }

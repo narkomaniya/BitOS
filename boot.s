@@ -54,3 +54,31 @@ outb:
 get_cpu_cycles:
     rdtsc
     ret
+
+# --- ДОБАВИТЬ В КОНЕЦ boot.s ---
+.global keyboard_handler_asm
+.extern keyboard_handler_c
+
+keyboard_handler_asm:
+    pushal                  # Сохраняем регистры
+    cld                     
+    call keyboard_handler_c # Вызываем функцию из drivers.c
+    popal                   # Возвращаем регистры
+    iret                    # Выход из прерывания
+
+.global keyboard_handler_asm
+.global load_idt_asm
+.extern keyboard_handler_c
+
+keyboard_handler_asm:
+    pushal
+    cld
+    call keyboard_handler_c
+    popal
+    iret
+
+load_idt_asm:
+    mov 4(%esp), %eax
+    lidt (%eax)
+    sti
+    ret
