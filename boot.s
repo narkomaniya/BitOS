@@ -49,3 +49,8 @@ outb:
     mov 4(%esp), %dx
     out %al, %dx
     ret
+
+.global get_cpu_cycles
+get_cpu_cycles:
+    rdtsc
+    ret
